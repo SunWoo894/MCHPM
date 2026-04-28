@@ -19,7 +19,7 @@ The model predicts a continuous review-helpfulness score, defined as `log(1 + he
 ```bash
 ├── data/
 │   ├── raw/                        # Source datasets — place {fname}.jsonl.gz here
-│   ├── processed/                  # Pipeline parquet caches (labeled / cued / train / test)
+│   ├── processed/                  # Pipeline parquet caches (labeled / cued)
 │   ├── review_images/              # Downloaded review images, grouped by dataset name
 │   └── mchpm_architecture.png
 │
@@ -55,22 +55,22 @@ MCHPM consists of three sequential modules. The full architecture is illustrated
 Extracts central and peripheral cues from review text and images in parallel.
 
 **Central cues** (deep semantic representations):
-- Text: BERT `[CLS]` embedding — 768-dim (Eq. 1)
-- Image: VGG-16 `fc2` activation — 4096-dim (Eq. 3)
+- Text: BERT `[CLS]` embedding
+- Image: VGG-16 `fc2` activation
 
 **Peripheral cues** (surface-level features):
-- Text — polarity, subjectivity, readability, extremity (4-dim, Table 1)
-- Image — brightness, contrast, saturation, edge intensity (4-dim, Table 2)
+- Text — polarity, subjectivity, readability, extremity
+- Image — brightness, contrast, saturation, edge intensity
 
 Implementation: [`src/text_cue_extractor.py`](src/text_cue_extractor.py), [`src/image_cue_extractor.py`](src/image_cue_extractor.py).
 
 ### 2. Cue-Integration Module
-Within each modality, central and peripheral representations attend to each other through co-attention: central queries peripheral, peripheral queries central, and the two attended outputs are combined via element-wise multiplication (Eqs 7–12). The same pattern is applied independently to the text and image sides, yielding modality-specific integrated vectors `O_t` and `O_v`.
+Within each modality, central and peripheral representations attend to each other through co-attention: central queries peripheral, peripheral queries central, and the two attended outputs are combined via element-wise multiplication. The same pattern is applied independently to the text and image sides, yielding modality-specific integrated vectors `O_t` and `O_v`.
 
 Implementation: `CoAttentionBlock` in [`model/mchpm.py`](model/mchpm.py).
 
 ### 3. Multimodal Fusion Module
-The integrated text and image vectors are passed through `tanh` projections, then fused by a Gated Multimodal Unit. A sigmoid gate `z`, computed from the concatenated representations, adaptively weights the contribution of each modality (Eqs 13–15). The fused vector is forwarded to an MLP regressor that outputs the predicted helpfulness score (Eq 16).
+The integrated text and image vectors are passed through `tanh` projections, then fused by a Gated Multimodal Unit. A sigmoid gate `z`, computed from the concatenated representations, adaptively weights the contribution of each modality. The fused vector is forwarded to an MLP regressor that outputs the predicted helpfulness score.
 
 Implementation: `MCHPM.gate_layer` and `MCHPM.regressor` in [`model/mchpm.py`](model/mchpm.py).
 
@@ -96,7 +96,7 @@ Place the dataset as `data/raw/{fname}.jsonl.gz` where `{fname}` matches `data.f
 `user_id`, `parent_asin`, `timestamp`, `text`, `images`, `helpful_vote`, `verified_purchase`, `title`
 (`text`, `images`, `title` are renamed to `raw_review`, `review_images`, `review_title`)
 
-Pipeline writes three cached parquets under `data/processed/`. Each stage requires the listed columns:
+Pipeline writes two cached parquets under `data/processed/`. The train/test shuffle split runs in memory on every run (no on-disk cache). Each stage requires the listed columns:
 
 **`{fname}_labeled.parquet`** — after row filters, text cleaning, and label construction:
 `user_id`, `parent_asin`, `timestamp`, `review_date`, `raw_review`, `clean_review`, `review_images`, `review_title`, `helpful_vote`, `label`
@@ -104,13 +104,10 @@ Pipeline writes three cached parquets under `data/processed/`. Each stage requir
 **`{fname}_cued.parquet`** — after image download and cue extraction:
 labeled columns + `review_image_paths`, `review_text_central`, `review_text_peripheral`, `review_image_central`, `review_image_peripheral`
 
-**`{fname}_train.parquet` / `{fname}_test.parquet`** — final shuffle split:
-cued columns (model consumes the four cue columns + `label`)
-
 To reuse externally-extracted BERT/VGG features, save the data as `{fname}_labeled.parquet` with `review_text_central` and/or `review_image_central` columns pre-populated. The pipeline will skip BERT/VGG and only compute peripheral cues.
 
 ### Re-runs and caching
-On every call to `python main.py`, the pipeline auto-skips any cache layer already on disk (splits → cued → labeled → image folder), so subsequent runs reuse prior work. To force a stage to re-run, delete the corresponding parquet (or the `data/review_images/{fname}/` folder for image re-downloads).
+On every call to `python main.py`, the pipeline auto-skips any cache layer already on disk (cued → labeled → image folder), so subsequent runs reuse prior work. The train/test split is rebuilt fresh in memory each run, so changes to `test_size`, `random_state`, or `val_ratio` take effect immediately on the next run. To force an upstream stage to re-run, delete the corresponding parquet (or the `data/review_images/{fname}/` folder for image re-downloads).
 
 ## Experimental Results
 

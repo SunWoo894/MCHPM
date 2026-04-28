@@ -22,7 +22,7 @@ from src.utils import load_json_gz, load_parquet, save_parquet
 
 @dataclass
 class DataProcessor:
-    """End-to-end data pipeline: raw JSONL → clean → cue extraction → train/test parquet."""
+    """End-to-end data pipeline: raw JSONL → clean → cue extraction (cached); split runs in-memory."""
 
     fname: str
     test_size: float
@@ -41,14 +41,8 @@ class DataProcessor:
         self.raw_path      = os.path.join(RAW_PATH, f"{self.fname}.jsonl.gz")
         self.labeled_path  = os.path.join(PROCESSED_PATH, f"{self.fname}_labeled.parquet")
         self.cued_path     = os.path.join(PROCESSED_PATH, f"{self.fname}_cued.parquet")
-        self.train_path    = os.path.join(PROCESSED_PATH, f"{self.fname}_train.parquet")
-        self.test_path     = os.path.join(PROCESSED_PATH, f"{self.fname}_test.parquet")
 
     # ---- cache checks
-
-    def _splits_exist(self) -> bool:
-        """True iff both train and test parquet splits already exist on disk."""
-        return all(os.path.exists(p) for p in (self.train_path, self.test_path))
 
     def _cued_exists(self) -> bool:
         """True iff the post-cue-extraction checkpoint parquet exists on disk."""
@@ -155,22 +149,17 @@ class DataProcessor:
         df = ImageCueExtractor(use_gpu=use_gpu).run(df, input_col="review_image_paths")
         return df
 
-    def _split_and_save(self, df: pd.DataFrame) -> None:
-        """Shuffle-split into train / test and persist each as parquet (val is carved downstream)."""
+    def _split(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Shuffle-split into train / test (val is carved downstream in main)."""
         train, test = train_test_split(df, test_size=self.test_size, random_state=self.random_state)
-
-        save_parquet(train, self.train_path)
-        save_parquet(test,  self.test_path)
         print(f"[Stats] Split sizes: train={len(train):,}, test={len(test):,}")
+        return train, test
 
     # ---- driver
 
-    def run(self) -> None:
-        """Run the full pipeline with 3-tier cache: splits → cued → labeled → raw."""
+    def run(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Cache-resumable through cued; split runs in-memory each call."""
         print(f"\n{'=' * 10} Data Processing {'=' * 10}")
-        if self._splits_exist():
-            print(f"[DataProcessor] Found cached splits for '{self.fname}'; skipping pipeline.")
-            return
 
         if self._cued_exists():
             print(f"[DataProcessor] Resuming from cued checkpoint: {self.cued_path}")
@@ -200,8 +189,9 @@ class DataProcessor:
             save_parquet(df, self.cued_path)
             print(f"[DataProcessor] Saved cued checkpoint: {self.cued_path}")
 
-        self._split_and_save(df)
+        train, test = self._split(df)
         print("[DataProcessor] Processing complete.")
+        return train, test
 
 
 # ---- Peripheral-cue post-processing -------------------------------------

@@ -1,18 +1,19 @@
 import os
 
+import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
 from model.mchpm import MCHPM, predict, train
 from src.data_processing import DataProcessor, get_data_loader, standardize_peripheral_cues
-from src.path import PROCESSED_PATH, SAVE_MODEL_PATH, SRC_PATH
-from src.utils import get_metrics, load_parquet, load_yaml, set_seed
+from src.path import SAVE_MODEL_PATH, SRC_PATH
+from src.utils import get_metrics, load_yaml, set_seed
 
 
-def run_data_processing(dargs: dict, seed: int, fname: str, device: str) -> None:
-    """Invoke the DataProcessor pipeline (cache check decides whether to skip)."""
-    DataProcessor(
+def run_data_processing(dargs: dict, seed: int, fname: str, device: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run the DataProcessor pipeline; returns in-memory train and test dfs (no on-disk split cache)."""
+    return DataProcessor(
         fname=fname,
         test_size=dargs["test_size"],
         random_state=seed,
@@ -20,10 +21,9 @@ def run_data_processing(dargs: dict, seed: int, fname: str, device: str) -> None
     ).run()
 
 
-def build_loaders(args: dict, fname: str, seed: int) -> tuple[DataLoader, DataLoader, DataLoader]:
-    """Load train/test parquet, carve val out of train, standardize peripheral cues, and wrap each split in a torch DataLoader."""
-    train_df = load_parquet(os.path.join(PROCESSED_PATH, f"{fname}_train.parquet"))
-    test_df  = load_parquet(os.path.join(PROCESSED_PATH, f"{fname}_test.parquet"))
+def build_loaders(args: dict, train_df: pd.DataFrame, test_df: pd.DataFrame,
+                  seed: int) -> tuple[DataLoader, DataLoader, DataLoader]:
+    """Carve val out of train, standardize peripheral cues, and wrap each split in a torch DataLoader."""
     train_df, val_df = train_test_split(train_df, test_size=args["val_ratio"], random_state=seed)
     standardize_peripheral_cues(train_df, val_df, test_df)
     print(f"[Main] Train shape: {train_df.shape}")
@@ -66,9 +66,8 @@ def main() -> None:
     device = resolve_device(args["device"])
     print(f"[Main] Device: {device}")
 
-    run_data_processing(dargs, seed, fname, device)
-
-    train_loader, val_loader, test_loader = build_loaders(args, fname, seed)
+    train_df, test_df = run_data_processing(dargs, seed, fname, device)
+    train_loader, val_loader, test_loader = build_loaders(args, train_df, test_df, seed)
 
     print("[Main] Building PyTorch model...")
     model = build_model(args)
